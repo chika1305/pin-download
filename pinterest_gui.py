@@ -56,10 +56,18 @@ class PinterestDownloaderGUI:
         self.scroll_delay = tk.DoubleVar(value=2.0)
         self.download_delay = tk.DoubleVar(value=0.5)
         self.history_file = "download_history.json"
+        self.timing_stats_file = "timing_stats.json"  # Файл для статистики времени
 
         # Множественные URL - храним словари с URL, названием доски и количеством изображений
         self.url_list = []  # Список словарей: [{"url": "...", "board_name": "...", "max_images": 0}, ...]
         self.current_url_index = 0  # Текущий индекс URL
+
+        # Статистика времени для оценки оставшегося времени
+        self.timing_stats = self.load_timing_stats()
+        self.download_start_time = None
+        self.upscale_start_time = None
+        self.estimated_download_time = None
+        self.estimated_upscale_time = None
 
         # Upscale настройки
         self.enable_upscale = tk.BooleanVar(value=False)
@@ -842,7 +850,12 @@ class PinterestDownloaderGUI:
         progress_title.grid(row=0, column=0, sticky=tk.W, pady=(0, 15))
 
         self.progress_var = tk.StringVar(value="Готов к работе")
-        ttk.Label(progress_frame, textvariable=self.progress_var, style="Mac.TLabel").grid(row=1, column=0, sticky=tk.W, pady=(0, 10))
+        ttk.Label(progress_frame, textvariable=self.progress_var, style="Mac.TLabel").grid(row=1, column=0, sticky=tk.W, pady=(0, 5))
+
+        # Таймер для отображения времени
+        self.time_var = tk.StringVar(value="")
+        time_label = ttk.Label(progress_frame, textvariable=self.time_var, style="MacSubtitle.TLabel")
+        time_label.grid(row=2, column=0, sticky=tk.W, pady=(0, 10))
 
         # Используем стандартный стиль Progressbar с настройками цвета
         self.progress_bar = ttk.Progressbar(progress_frame, mode='determinate', length=300)
@@ -858,13 +871,18 @@ class PinterestDownloaderGUI:
         self.upscale_progress_var = tk.StringVar(value="")
         self.upscale_progress_label = ttk.Label(progress_frame, textvariable=self.upscale_progress_var,
                                                 style="MacSubtitle.TLabel")
-        self.upscale_progress_label.grid(row=3, column=0, sticky=tk.W, pady=(0, 5))
+        self.upscale_progress_label.grid(row=4, column=0, sticky=tk.W, pady=(0, 5))
+
+        # Таймер для upscale
+        self.upscale_time_var = tk.StringVar(value="")
+        upscale_time_label = ttk.Label(progress_frame, textvariable=self.upscale_time_var, style="MacSubtitle.TLabel")
+        upscale_time_label.grid(row=5, column=0, sticky=tk.W, pady=(0, 5))
 
         self.upscale_progress_bar = ttk.Progressbar(progress_frame, mode='determinate', length=300)
-        self.upscale_progress_bar.grid(row=4, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        self.upscale_progress_bar.grid(row=6, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
 
         stats_frame = tk.Frame(progress_frame, bg=self.frame_bg)
-        stats_frame.grid(row=5, column=0, sticky=tk.W)
+        stats_frame.grid(row=7, column=0, sticky=tk.W)
 
         self.stats_label = ttk.Label(stats_frame, text="Найдено: 0 | Скачано: 0 | Ошибок: 0", style="Mac.TLabel")
         self.stats_label.grid(row=0, column=0)
@@ -961,6 +979,124 @@ class PinterestDownloaderGUI:
                 json.dump(self.history, f, ensure_ascii=False, indent=2)
         except Exception as e:
             self.log(f"Ошибка сохранения истории: {e}")
+
+    def load_timing_stats(self):
+        """Загрузка статистики времени"""
+        if os.path.exists(self.timing_stats_file):
+            try:
+                with open(self.timing_stats_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except:
+                return {
+                    "download_times": [],  # Список времени на скачивание N изображений
+                    "upscale_times": []    # Список времени на upscale N изображений
+                }
+        return {
+            "download_times": [],
+            "upscale_times": []
+        }
+
+    def save_timing_stats(self):
+        """Сохранение статистики времени"""
+        try:
+            with open(self.timing_stats_file, 'w', encoding='utf-8') as f:
+                json.dump(self.timing_stats, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"Ошибка сохранения статистики времени: {e}")
+
+    def add_download_timing(self, image_count, elapsed_time):
+        """Добавить запись о времени скачивания"""
+        self.timing_stats["download_times"].append({
+            "count": image_count,
+            "time": elapsed_time,
+            "timestamp": datetime.now().isoformat()
+        })
+        # Оставляем только последние 50 записей
+        if len(self.timing_stats["download_times"]) > 50:
+            self.timing_stats["download_times"] = self.timing_stats["download_times"][-50:]
+        self.save_timing_stats()
+
+    def add_upscale_timing(self, image_count, elapsed_time):
+        """Добавить запись о времени upscale"""
+        self.timing_stats["upscale_times"].append({
+            "count": image_count,
+            "time": elapsed_time,
+            "timestamp": datetime.now().isoformat()
+        })
+        # Оставляем только последние 50 записей
+        if len(self.timing_stats["upscale_times"]) > 50:
+            self.timing_stats["upscale_times"] = self.timing_stats["upscale_times"][-50:]
+        self.save_timing_stats()
+
+    def estimate_download_time(self, image_count):
+        """Оценить время скачивания на основе статистики"""
+        if not self.timing_stats["download_times"]:
+            return None
+        
+        # Берем последние 10 записей для более точной оценки
+        recent_times = self.timing_stats["download_times"][-10:]
+        
+        # Вычисляем среднее время на одно изображение
+        total_time = 0
+        total_count = 0
+        for record in recent_times:
+            if record["count"] > 0:
+                time_per_image = record["time"] / record["count"]
+                total_time += time_per_image
+                total_count += 1
+        
+        if total_count == 0:
+            return None
+        
+        avg_time_per_image = total_time / total_count
+        estimated_time = avg_time_per_image * image_count
+        return estimated_time
+
+    def estimate_upscale_time(self, image_count):
+        """Оценить время upscale на основе статистики"""
+        if not self.timing_stats["upscale_times"]:
+            return None
+        
+        # Берем последние 10 записей для более точной оценки
+        recent_times = self.timing_stats["upscale_times"][-10:]
+        
+        # Вычисляем среднее время на одно изображение
+        total_time = 0
+        total_count = 0
+        for record in recent_times:
+            if record["count"] > 0:
+                time_per_image = record["time"] / record["count"]
+                total_time += time_per_image
+                total_count += 1
+        
+        if total_count == 0:
+            return None
+        
+        avg_time_per_image = total_time / total_count
+        estimated_time = avg_time_per_image * image_count
+        return estimated_time
+
+    def format_time(self, seconds):
+        """Форматировать время в читаемый вид"""
+        if seconds is None:
+            return "---"
+        if seconds < 60:
+            return f"{int(seconds)} сек"
+        elif seconds < 3600:
+            minutes = int(seconds // 60)
+            secs = int(seconds % 60)
+            return f"{minutes} мин {secs} сек"
+        else:
+            hours = int(seconds // 3600)
+            minutes = int((seconds % 3600) // 60)
+            return f"{hours} ч {minutes} мин"
+
+    def format_remaining_time(self, elapsed, estimated):
+        """Форматировать оставшееся время"""
+        if estimated is None:
+            return "---"
+        remaining = max(0, estimated - elapsed)
+        return self.format_time(remaining)
 
     def add_url_to_list(self):
         """Добавить URL в список и получить название доски"""
@@ -1528,6 +1664,16 @@ class PinterestDownloaderGUI:
             print(f"[UPSCALE] Выходная папка: {output_path}")
             self.safe_update_ui(lambda: self.log(f"📦 Модель: {chosen}, масштаб: x{run_scale}") or 0)
 
+            # Начинаем измерение времени upscale
+            self.upscale_start_time = time.time()
+            estimated_time = self.estimate_upscale_time(total_images)
+            self.estimated_upscale_time = estimated_time
+            if estimated_time:
+                self.safe_update_ui(lambda: self.log(f"⏱️ Оценка времени upscale: {self.format_time(estimated_time)}") or 0)
+            
+            # Запускаем обновление таймера
+            self.update_upscale_timer()
+
             # Запуск realesrgan с отслеживанием прогресса
             cmd = [str(exe), "-m", str(models_dir), "-n", chosen,
                    "-i", str(input_path), "-o", str(output_path), "-s", str(run_scale),
@@ -1619,6 +1765,16 @@ class PinterestDownloaderGUI:
             # Подсчитываем результат
             result_files = [f for f in output_path.iterdir()
                            if f.is_file() and f.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}]
+
+            # Сохраняем время upscale
+            if self.upscale_start_time:
+                elapsed_time = time.time() - self.upscale_start_time
+                if len(result_files) > 0:
+                    self.add_upscale_timing(len(result_files), elapsed_time)
+                    self.safe_update_ui(lambda: self.log(f"⏱️ Время upscale: {self.format_time(elapsed_time)}") or 0)
+                self.upscale_start_time = None
+                self.estimated_upscale_time = None
+                self.safe_update_ui(lambda: self.upscale_time_var.set("") or 0)
 
             print(f"[UPSCALE] ===== Upscale завершен =====")
             print(f"[UPSCALE] Обработано изображений: {len(result_files)}/{total_images}")
@@ -1876,6 +2032,16 @@ class PinterestDownloaderGUI:
 
             self.safe_update_ui(lambda: self.log(f"✓ Найдено {len(image_urls)} изображений") or 0)
 
+            # Начинаем измерение времени скачивания
+            self.download_start_time = time.time()
+            estimated_time = self.estimate_download_time(len(image_urls))
+            self.estimated_download_time = estimated_time
+            if estimated_time:
+                self.safe_update_ui(lambda: self.log(f"⏱️ Оценка времени скачивания: {self.format_time(estimated_time)}") or 0)
+            
+            # Запускаем обновление таймера
+            self.update_download_timer()
+
             # Скачивание изображений
             downloaded = 0
             failed = 0
@@ -2018,6 +2184,8 @@ class PinterestDownloaderGUI:
                                   self.progress_bar.config(value=c) or 0)
                 self.safe_update_ui(lambda i=index+1, t=len(image_urls), c=self.current_downloaded_count, tot=self.total_images_to_download:
                                   self.progress_var.set(f"Скачивание: {i}/{t} (всего: {c}/{tot})") or 0)
+                # Обновляем таймер
+                self.update_download_timer()
 
                 self.stats["downloaded"] = downloaded
                 self.stats["skipped"] = skipped
@@ -2025,6 +2193,17 @@ class PinterestDownloaderGUI:
                 self.safe_after(0, lambda: self.update_stats() or 0)
 
                 time.sleep(self.download_delay.get())
+
+            # Завершение - сохраняем время скачивания
+            if self.download_start_time:
+                elapsed_time = time.time() - self.download_start_time
+                total_downloaded = downloaded + skipped  # Учитываем и пропущенные
+                if total_downloaded > 0:
+                    self.add_download_timing(total_downloaded, elapsed_time)
+                    self.safe_update_ui(lambda: self.log(f"⏱️ Время скачивания: {self.format_time(elapsed_time)}") or 0)
+                self.download_start_time = None
+                self.estimated_download_time = None
+                self.safe_update_ui(lambda: self.time_var.set("") or 0)
 
             # Завершение
             self.safe_update_ui(lambda: self.log(f"\n✓ Скачивание завершено!") or 0)
@@ -2079,6 +2258,42 @@ class PinterestDownloaderGUI:
         stats_text = f"Найдено: {self.stats['found']} | Скачано: {self.stats['downloaded']} | Ошибок: {self.stats['failed']} | Пропущено: {self.stats['skipped']}"
         self.stats_label.config(text=stats_text)
 
+    def update_download_timer(self):
+        """Обновление таймера скачивания"""
+        if not self.download_start_time:
+            return
+        
+        elapsed = time.time() - self.download_start_time
+        if self.estimated_download_time:
+            remaining = self.format_remaining_time(elapsed, self.estimated_download_time)
+            elapsed_str = self.format_time(elapsed)
+            self.safe_update_ui(lambda: self.time_var.set(f"⏱️ Прошло: {elapsed_str} | Осталось: {remaining}") or 0)
+        else:
+            elapsed_str = self.format_time(elapsed)
+            self.safe_update_ui(lambda: self.time_var.set(f"⏱️ Прошло: {elapsed_str}") or 0)
+        
+        # Планируем следующее обновление через 1 секунду
+        if self.is_downloading and self.download_start_time:
+            self.root.after(1000, self.update_download_timer)
+
+    def update_upscale_timer(self):
+        """Обновление таймера upscale"""
+        if not self.upscale_start_time:
+            return
+        
+        elapsed = time.time() - self.upscale_start_time
+        if self.estimated_upscale_time:
+            remaining = self.format_remaining_time(elapsed, self.estimated_upscale_time)
+            elapsed_str = self.format_time(elapsed)
+            self.safe_update_ui(lambda: self.upscale_time_var.set(f"⏱️ Прошло: {elapsed_str} | Осталось: {remaining}") or 0)
+        else:
+            elapsed_str = self.format_time(elapsed)
+            self.safe_update_ui(lambda: self.upscale_time_var.set(f"⏱️ Прошло: {elapsed_str}") or 0)
+        
+        # Планируем следующее обновление через 1 секунду
+        if self.is_downloading and self.upscale_start_time:
+            self.root.after(1000, self.update_upscale_timer)
+
     def update_ui_after_stop(self):
         """Обновление UI после остановки"""
         self.is_downloading = False
@@ -2088,8 +2303,10 @@ class PinterestDownloaderGUI:
         self.stop_btn.config(state=tk.DISABLED)
         self.progress_var.set("Готов к работе")
         self.progress_bar.config(value=0, maximum=100)
+        self.time_var.set("")
         self.upscale_progress_var.set("")
         self.upscale_progress_bar.config(value=0, maximum=100)
+        self.upscale_time_var.set("")
         self.total_images_to_download = 0
         self.current_downloaded_count = 0
 
