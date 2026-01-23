@@ -852,10 +852,10 @@ class PinterestDownloaderGUI:
         self.progress_var = tk.StringVar(value="Готов к работе")
         ttk.Label(progress_frame, textvariable=self.progress_var, style="Mac.TLabel").grid(row=1, column=0, sticky=tk.W, pady=(0, 5))
 
-        # Таймер для отображения времени
+        # Таймер для отображения времени (под статусом, над прогресс-баром)
         self.time_var = tk.StringVar(value="")
-        time_label = ttk.Label(progress_frame, textvariable=self.time_var, style="MacSubtitle.TLabel")
-        time_label.grid(row=2, column=0, sticky=tk.W, pady=(0, 10))
+        time_label = ttk.Label(progress_frame, textvariable=self.time_var, style="MacSubtitle.TLabel", foreground="#6B6B6F")
+        time_label.grid(row=2, column=0, sticky=tk.W, pady=(0, 5))
 
         # Используем стандартный стиль Progressbar с настройками цвета
         self.progress_bar = ttk.Progressbar(progress_frame, mode='determinate', length=300)
@@ -865,7 +865,7 @@ class PinterestDownloaderGUI:
                             troughcolor="#E5E5EA",
                             borderwidth=0,
                             thickness=8)
-        self.progress_bar.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        self.progress_bar.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
 
         # Прогресс-бар для upscale
         self.upscale_progress_var = tk.StringVar(value="")
@@ -875,7 +875,7 @@ class PinterestDownloaderGUI:
 
         # Таймер для upscale
         self.upscale_time_var = tk.StringVar(value="")
-        upscale_time_label = ttk.Label(progress_frame, textvariable=self.upscale_time_var, style="MacSubtitle.TLabel")
+        upscale_time_label = ttk.Label(progress_frame, textvariable=self.upscale_time_var, style="MacSubtitle.TLabel", foreground="#6B6B6F")
         upscale_time_label.grid(row=5, column=0, sticky=tk.W, pady=(0, 5))
 
         self.upscale_progress_bar = ttk.Progressbar(progress_frame, mode='determinate', length=300)
@@ -1671,8 +1671,11 @@ class PinterestDownloaderGUI:
             if estimated_time:
                 self.safe_update_ui(lambda: self.log(f"⏱️ Оценка времени upscale: {self.format_time(estimated_time)}") or 0)
             
-            # Запускаем обновление таймера
-            self.update_upscale_timer()
+            # Сразу показываем начальное значение таймера
+            self.safe_update_ui(lambda: self.upscale_time_var.set("Прошло: 0 сек") or 0)
+            
+            # Запускаем обновление таймера через главный поток
+            self.safe_after(1000, lambda: self.update_upscale_timer())
 
             # Запуск realesrgan с отслеживанием прогресса
             cmd = [str(exe), "-m", str(models_dir), "-n", chosen,
@@ -2039,8 +2042,11 @@ class PinterestDownloaderGUI:
             if estimated_time:
                 self.safe_update_ui(lambda: self.log(f"⏱️ Оценка времени скачивания: {self.format_time(estimated_time)}") or 0)
             
-            # Запускаем обновление таймера
-            self.update_download_timer()
+            # Сразу показываем начальное значение таймера
+            self.safe_update_ui(lambda: self.time_var.set("Прошло: 0 сек") or 0)
+            
+            # Запускаем обновление таймера через главный поток
+            self.safe_after(1000, lambda: self.update_download_timer())
 
             # Скачивание изображений
             downloaded = 0
@@ -2184,8 +2190,7 @@ class PinterestDownloaderGUI:
                                   self.progress_bar.config(value=c) or 0)
                 self.safe_update_ui(lambda i=index+1, t=len(image_urls), c=self.current_downloaded_count, tot=self.total_images_to_download:
                                   self.progress_var.set(f"Скачивание: {i}/{t} (всего: {c}/{tot})") or 0)
-                # Обновляем таймер
-                self.update_download_timer()
+                # Таймер обновляется автоматически каждую секунду
 
                 self.stats["downloaded"] = downloaded
                 self.stats["skipped"] = skipped
@@ -2267,14 +2272,16 @@ class PinterestDownloaderGUI:
         if self.estimated_download_time:
             remaining = self.format_remaining_time(elapsed, self.estimated_download_time)
             elapsed_str = self.format_time(elapsed)
-            self.safe_update_ui(lambda: self.time_var.set(f"⏱️ Прошло: {elapsed_str} | Осталось: {remaining}") or 0)
+            timer_text = f"Прошло: {elapsed_str} | Осталось: {remaining}"
         else:
             elapsed_str = self.format_time(elapsed)
-            self.safe_update_ui(lambda: self.time_var.set(f"⏱️ Прошло: {elapsed_str}") or 0)
+            timer_text = f"Прошло: {elapsed_str}"
+        
+        self.safe_update_ui(lambda t=timer_text: self.time_var.set(t) or 0)
         
         # Планируем следующее обновление через 1 секунду
         if self.is_downloading and self.download_start_time:
-            self.root.after(1000, self.update_download_timer)
+            self.safe_after(1000, lambda: self.update_download_timer())
 
     def update_upscale_timer(self):
         """Обновление таймера upscale"""
@@ -2285,14 +2292,16 @@ class PinterestDownloaderGUI:
         if self.estimated_upscale_time:
             remaining = self.format_remaining_time(elapsed, self.estimated_upscale_time)
             elapsed_str = self.format_time(elapsed)
-            self.safe_update_ui(lambda: self.upscale_time_var.set(f"⏱️ Прошло: {elapsed_str} | Осталось: {remaining}") or 0)
+            timer_text = f"Прошло: {elapsed_str} | Осталось: {remaining}"
         else:
             elapsed_str = self.format_time(elapsed)
-            self.safe_update_ui(lambda: self.upscale_time_var.set(f"⏱️ Прошло: {elapsed_str}") or 0)
+            timer_text = f"Прошло: {elapsed_str}"
+        
+        self.safe_update_ui(lambda t=timer_text: self.upscale_time_var.set(t) or 0)
         
         # Планируем следующее обновление через 1 секунду
         if self.is_downloading and self.upscale_start_time:
-            self.root.after(1000, self.update_upscale_timer)
+            self.safe_after(1000, lambda: self.update_upscale_timer())
 
     def update_ui_after_stop(self):
         """Обновление UI после остановки"""
