@@ -18,7 +18,7 @@
 
 - **Python 3.7+**
 - **Google Chrome** (для работы Selenium)
-- **Windows 10/11** (для уведомлений)
+- **Windows / macOS / Linux**
 
 ### Установка зависимостей
 
@@ -32,19 +32,22 @@ pip install -r requirements.txt
 - `requests` - для скачивания изображений
 - `Pillow` - для работы с изображениями
 - `tkinter` - GUI (обычно входит в Python)
+- `PySide6` - нативный GUI для macOS (fallback, если Tk недоступен)
 - `win10toast` - уведомления Windows (опционально)
 
 ## Установка
 
 1. Скачайте или клонируйте репозиторий
 2. Установите зависимости: `pip install -r requirements.txt`
-3. Запустите программу: `python pinterest_gui.py`
+3. Запустите программу:
+   - универсально: `python pinterest_gui.py`
+   - macOS (Qt-версия): `python pinterest_gui_mac.py`
 
 ## Использование
 
 ### Базовое использование
 
-1. **Запустите программу**: `python pinterest_gui.py`
+1. **Запустите программу**: `python pinterest_gui.py` (или `python pinterest_gui_mac.py` на macOS)
 2. **Введите URL доски Pinterest** в поле "URL доски"
 3. **Настройте параметры** (опционально):
    - Количество изображений (0 = все)
@@ -71,7 +74,7 @@ pip install -r requirements.txt
 3. Программа автоматически запустит upscale после скачивания
 
 **Важно**: Для работы upscale необходимо:
-- Установить `realesrgan-ncnn-vulkan.exe` в папку `upscale/tools/`
+- Установить бинарник `realesrgan-ncnn-vulkan` (на Windows `realesrgan-ncnn-vulkan.exe`) в папку `upscale/tools/`
 - Добавить модели в папку `upscale/tools/models/`
 
 ### Шаблоны имен файлов
@@ -132,7 +135,7 @@ pip install -r requirements.txt
 ### Upscale не работает
 
 **Проверьте**:
-1. Установлен ли `realesrgan-ncnn-vulkan.exe` в `upscale/tools/`
+1. Установлен ли `realesrgan-ncnn-vulkan`/`realesrgan-ncnn-vulkan.exe` в `upscale/tools/`
 2. Есть ли модели в `upscale/tools/models/`
 3. Достаточно ли VRAM на видеокарте (уменьшите размер тайла)
 4. Проверьте логи в консоли (они начинаются с `[UPSCALE]`)
@@ -184,7 +187,7 @@ pin-download/
 ├── timing_stats.json          # Статистика времени (создается автоматически)
 └── upscale/                   # Папка для upscale
     ├── tools/
-    │   ├── realesrgan-ncnn-vulkan.exe
+    │   ├── realesrgan-ncnn-vulkan(.exe)
     │   └── models/
     │       ├── model1.param
     │       ├── model1.bin

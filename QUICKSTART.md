@@ -2,6 +2,28 @@
 
 ## Установка
 
+### macOS
+
+Не используйте для GUI только Python из **Xcode Command Line Tools**: с ним идёт старый **Tk 8.5**, на новых версиях macOS окно падает при старте (в логе бывает «macOS 26 required, have 16»). Нужен Python с [python.org](https://www.python.org/downloads/) или из Homebrew (`brew install python@3.12`), затем venv именно от него:
+
+```bash
+rm -rf .venv
+/Library/Frameworks/Python.framework/Versions/3.12/bin/python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python pinterest_gui.py
+```
+
+**Вариант без Tk (рекомендуется на новых macOS):** после `pip install -r requirements.txt` ставится **PySide6**. Запуск нативного Qt-интерфейса с той же логикой скачивания:
+
+```bash
+python pinterest_gui_mac.py
+```
+
+(Путь к `python3` подставьте свой — `which python3` после установки.)
+
+### Все платформы
+
 1. Установите зависимости:
 ```bash
 pip install -r requirements.txt

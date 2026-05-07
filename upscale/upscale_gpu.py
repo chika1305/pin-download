@@ -1,5 +1,6 @@
 import argparse
 import re
+import sys
 from pathlib import Path
 from subprocess import run
 from typing import Optional, List
@@ -26,11 +27,23 @@ def find_or_make_dirs(explicit_input: Optional[Path]) -> tuple[Path, Path, Path]
 def list_images(folder: Path):
     return [p for p in sorted(folder.iterdir()) if p.is_file() and p.suffix.lower() in SUPPORTED_EXTS]
 
+def _realesrgan_filenames() -> List[str]:
+    if sys.platform == "win32":
+        return ["realesrgan-ncnn-vulkan.exe"]
+    return ["realesrgan-ncnn-vulkan", "realesrgan-ncnn-vulkan.exe"]
+
+
 def find_exe(base_dir: Path, tools_dir: Path) -> Optional[Path]:
-    for cand in [tools_dir / "realesrgan-ncnn-vulkan.exe",
-                 base_dir / "realesrgan-ncnn-vulkan.exe",
-                 next((p for p in tools_dir.rglob("realesrgan-ncnn-vulkan.exe")), None)]:
-        if isinstance(cand, Path) and cand and cand.exists():
+    names = _realesrgan_filenames()
+    candidates: list[Optional[Path]] = []
+    for name in names:
+        candidates.append(tools_dir / name)
+        candidates.append(base_dir / name)
+    for name in names:
+        found = next((p for p in tools_dir.rglob(name) if p.is_file()), None)
+        candidates.append(found)
+    for cand in candidates:
+        if isinstance(cand, Path) and cand.exists():
             return cand
     return None
 
@@ -173,7 +186,10 @@ def main():
 
     exe = find_exe(base, tools)
     if not exe:
-        print("❗ Не найден realesrgan-ncnn-vulkan.exe (ожидается tools\\ или рядом со скриптом).")
+        hint = "realesrgan-ncnn-vulkan" + (".exe" if sys.platform == "win32" else "")
+        print(
+            f"❗ Не найден {hint} (положите бинарник в upscale/tools/ или рядом со скриптом)."
+        )
         return
 
     models_dir = find_models_dir(exe, tools)

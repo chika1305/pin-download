@@ -1,16 +1,99 @@
 """
-Pinterest Image Downloader - GUI приложение для Windows
+Pinterest Image Downloader — GUI (Windows, macOS, Linux).
 """
+
+import os
+import subprocess
+import sys
+
+
+def _ensure_tkinter_usable():
+    """
+    На macOS Python из Xcode Command Line Tools тянет системный Tk 8.5, который на новых
+    версиях ОС падает при init (сообщение вида «macOS 26 required, have 16»). Проверяем
+    в дочернем процессе, чтобы не убивать основной интерпретатор SIGABRT.
+    """
+    if sys.platform != "darwin":
+        return
+    # Достаточно import — на части систем падает только при создании корневого окна (TkpInit).
+    _probe = (
+        "import tkinter as tk; "
+        "r = tk.Tk(); r.withdraw(); r.destroy()"
+    )
+    try:
+        r = subprocess.run(
+            [sys.executable, "-c", _probe],
+            capture_output=True,
+            timeout=20,
+            text=True,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(
+            "Не удалось проверить Tcl/Tk:\n"
+            f"  {e}\n\n"
+            "Пробую запустить Qt-версию интерфейса (pinterest_gui_mac.py)...",
+            file=sys.stderr,
+        )
+        _run_qt_fallback_or_exit(e)
+    if r.returncode == 0:
+        return
+    out = ((r.stderr or "") + (r.stdout or "")).strip()
+    sig = ""
+    if r.returncode < 0:
+        sig = f" (сигнал {-r.returncode})"
+    print(
+        "\nGUI не запускается: с этим Python модуль tkinter/Tcl-Tk не работает"
+        f"{sig}.\n\n"
+        "Типично на macOS: виртуальное окружение создано на базе Python из "
+        "«Command Line Tools» (устаревший Tk 8.5).\n\n"
+        "Что сделать:\n"
+        "  1. Установите Python с https://www.python.org/downloads/\n"
+        "     (в комплекте актуальный Tcl/Tk), либо: brew install python@3.12\n"
+        "  2. Пересоздайте окружение, указав новый python, например:\n"
+        "       rm -rf .venv\n"
+        "       /Library/Frameworks/Python.framework/Versions/3.12/bin/python3 -m venv .venv\n"
+        "  3. source .venv/bin/activate && pip install -r requirements.txt\n"
+        "  4. python pinterest_gui.py\n",
+        file=sys.stderr,
+    )
+    if out:
+        print("Вывод проверки:\n", out[:800], file=sys.stderr, sep="")
+    _run_qt_fallback_or_exit(None)
+
+
+def _run_qt_fallback_or_exit(cause):
+    """Запускает Qt GUI на macOS, если Tk недоступен."""
+    try:
+        from pinterest_gui_mac import main as qt_main
+        print(
+            "Tkinter недоступен. Запускаю Qt-интерфейс: pinterest_gui_mac.py",
+            file=sys.stderr,
+        )
+        qt_main()
+        raise SystemExit(0)
+    except Exception as qt_error:
+        print(
+            "\nНе удалось запустить fallback интерфейс (Qt/PySide6).\n"
+            "Установите зависимости и попробуйте снова:\n"
+            "  pip install -r requirements.txt\n"
+            "  python pinterest_gui_mac.py\n",
+            file=sys.stderr,
+        )
+        if cause:
+            print(f"Причина проблемы Tk: {cause}", file=sys.stderr)
+        print(f"Причина проблемы Qt: {qt_error}", file=sys.stderr)
+        raise SystemExit(1) from qt_error
+
+
+_ensure_tkinter_usable()
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 import threading
 import json
-import os
 import time
 import hashlib
 import re
-import subprocess
 from datetime import datetime
 from pathlib import Path
 from PIL import Image, ImageTk
@@ -436,18 +519,35 @@ class PinterestDownloaderGUI:
         self.main_canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         self.main_canvas.configure(yscrollcommand=scrollbar.set)
 
-        # Привязка прокрутки колесиком мыши
+        # Прокрутка колесом: на Windows delta кратен 120, на macOS — другая шкала
         def on_mousewheel(event):
-            self.main_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            if sys.platform == "darwin":
+                self.main_canvas.yview_scroll(int(-1 * event.delta), "units")
+            else:
+                self.main_canvas.yview_scroll(
+                    int(-1 * (event.delta / 120)), "units"
+                )
 
-        def bind_mousewheel(event):
+        def on_mousewheel_linux(event):
+            if event.num == 4:
+                self.main_canvas.yview_scroll(-1, "units")
+            elif event.num == 5:
+                self.main_canvas.yview_scroll(1, "units")
+
+        def bind_mousewheel(_event=None):
             self.main_canvas.bind_all("<MouseWheel>", on_mousewheel)
+            if sys.platform.startswith("linux"):
+                self.main_canvas.bind_all("<Button-4>", on_mousewheel_linux)
+                self.main_canvas.bind_all("<Button-5>", on_mousewheel_linux)
 
-        def unbind_mousewheel(event):
+        def unbind_mousewheel(_event=None):
             self.main_canvas.unbind_all("<MouseWheel>")
+            if sys.platform.startswith("linux"):
+                self.main_canvas.unbind_all("<Button-4>")
+                self.main_canvas.unbind_all("<Button-5>")
 
-        self.main_canvas.bind('<Enter>', bind_mousewheel)
-        self.main_canvas.bind('<Leave>', unbind_mousewheel)
+        self.main_canvas.bind("<Enter>", bind_mousewheel)
+        self.main_canvas.bind("<Leave>", unbind_mousewheel)
 
         # Обновление области прокрутки при изменении размера окна
         def update_scroll_region(event=None):
@@ -762,9 +862,17 @@ class PinterestDownloaderGUI:
         ttk.Checkbutton(advanced_frame, text="Продолжать прерванное скачивание (resume)",
                        variable=self.resume_download, style="Mac.TCheckbutton").grid(row=9, column=0, sticky=tk.W, pady=(0, 8))
 
-        # Уведомления Windows
-        ttk.Checkbutton(advanced_frame, text="Уведомления Windows о завершении",
-                       variable=self.windows_notifications, style="Mac.TCheckbutton").grid(row=10, column=0, sticky=tk.W, pady=(0, 8))
+        _notify_text = (
+            "Уведомления Windows о завершении"
+            if sys.platform == "win32"
+            else "Уведомление по завершении работы"
+        )
+        ttk.Checkbutton(
+            advanced_frame,
+            text=_notify_text,
+            variable=self.windows_notifications,
+            style="Mac.TCheckbutton",
+        ).grid(row=10, column=0, sticky=tk.W, pady=(0, 8))
 
         # Экспорт метаданных
         ttk.Checkbutton(advanced_frame, text="Экспорт метаданных в JSON",
@@ -1520,16 +1628,25 @@ class PinterestDownloaderGUI:
         self.update_ui_after_stop()
 
     def find_upscale_exe(self):
-        """Поиск realesrgan-ncnn-vulkan.exe"""
+        """Поиск бинарника Real-ESRGAN (realesrgan-ncnn-vulkan[.exe])."""
         base_dir = Path(__file__).resolve().parent
         tools_dir = base_dir / "upscale" / "tools"
-
-        # Проверяем возможные пути
-        for cand in [tools_dir / "realesrgan-ncnn-vulkan.exe",
-                     base_dir / "upscale" / "realesrgan-ncnn-vulkan.exe",
-                     base_dir / "realesrgan-ncnn-vulkan.exe"]:
-            if cand.exists():
-                return cand
+        if sys.platform == "win32":
+            names = ["realesrgan-ncnn-vulkan.exe"]
+        else:
+            names = ["realesrgan-ncnn-vulkan", "realesrgan-ncnn-vulkan.exe"]
+        for name in names:
+            for cand in (
+                tools_dir / name,
+                base_dir / "upscale" / name,
+                base_dir / name,
+            ):
+                if cand.exists():
+                    return cand
+        for name in names:
+            found = next((p for p in tools_dir.rglob(name) if p.is_file()), None)
+            if found:
+                return found
         return None
 
     def find_models_dir(self, exe_path):
@@ -1622,8 +1739,15 @@ class PinterestDownloaderGUI:
 
             exe = self.find_upscale_exe()
             if not exe:
-                print("[UPSCALE] ❌ Не найден realesrgan-ncnn-vulkan.exe")
-                self.safe_update_ui(lambda: self.log("❌ Не найден realesrgan-ncnn-vulkan.exe") or 0)
+                hint = (
+                    "realesrgan-ncnn-vulkan.exe"
+                    if sys.platform == "win32"
+                    else "realesrgan-ncnn-vulkan"
+                )
+                print(f"[UPSCALE] ❌ Не найден {hint}")
+                self.safe_update_ui(
+                    lambda h=hint: self.log(f"❌ Не найден {h} в upscale/tools/") or 0
+                )
                 return False
             print(f"[UPSCALE] EXE: {exe}")
 
@@ -2218,7 +2342,6 @@ class PinterestDownloaderGUI:
             if self.export_metadata.get():
                 self.export_metadata_json(parser.download_folder, image_urls, url, downloaded, failed, skipped)
 
-            # Уведомление Windows
             if self.windows_notifications.get():
                 self.show_notification(f"Скачивание завершено!",
                                      f"Успешно: {downloaded} | Ошибок: {failed} | Пропущено: {skipped}")
@@ -2442,18 +2565,40 @@ class PinterestDownloaderGUI:
                   command=preview_window.destroy).pack(pady=10)
 
     def show_notification(self, title, message):
-        """Показать уведомление Windows"""
+        """Уведомление: macOS через osascript, Windows — win10toast, иначе messagebox."""
+        if sys.platform == "darwin":
+            try:
+
+                def esc(s):
+                    return (
+                        (s or "")
+                        .replace("\\", "\\\\")
+                        .replace('"', '\\"')
+                        .replace("\n", " ")
+                    )
+
+                script = (
+                    f'display notification "{esc(message)}" with title "{esc(title)}"'
+                )
+                subprocess.run(
+                    ["osascript", "-e", script],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                return
+            except OSError:
+                pass
         if HAS_TOAST:
             try:
                 toaster = ToastNotifier()
                 toaster.show_toast(title, message, duration=5, threaded=True)
-            except:
+            except Exception:
                 pass
         else:
-            # Fallback на messagebox если win10toast не установлен
             try:
                 messagebox.showinfo(title, message)
-            except:
+            except Exception:
                 pass
 
     def export_metadata_json(self, folder, image_urls, url, downloaded, failed, skipped):
@@ -2513,7 +2658,12 @@ class PinterestDownloaderGUI:
         """Открыть папку с изображениями"""
         folder = self.download_folder.get()
         if os.path.exists(folder):
-            os.startfile(folder)
+            if sys.platform == "darwin":
+                subprocess.run(["open", folder], check=False)
+            elif sys.platform == "win32":
+                os.startfile(folder)
+            else:
+                subprocess.run(["xdg-open", folder], check=False)
         else:
             messagebox.showwarning("Внимание", "Папка не существует")
 

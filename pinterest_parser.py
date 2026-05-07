@@ -4,6 +4,7 @@
 """
 
 import os
+import sys
 import time
 import requests
 import subprocess
@@ -89,43 +90,86 @@ class PinterestParser:
                 pass
         return self.session
 
-    def check_chrome_installed(self):
-        """Проверяет, установлен ли Chrome"""
-        chrome_paths = [
-            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-            os.path.expanduser(r"~\AppData\Local\Google\Chrome\Application\chrome.exe")
-        ]
+    def get_chrome_binary_path(self):
+        """Возвращает путь к совместимому Chromium-браузеру или None."""
+        if sys.platform == 'win32':
+            chrome_paths = [
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                os.path.expanduser(r"~\AppData\Local\Google\Chrome\Application\chrome.exe"),
+                r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+                r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
+            ]
+            for path in chrome_paths:
+                if os.path.exists(path):
+                    return path
+            try:
+                result = subprocess.run(
+                    ['where', 'chrome'],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    return result.stdout.strip().splitlines()[0]
+            except OSError:
+                pass
+            return None
 
-        for path in chrome_paths:
-            if os.path.exists(path):
-                return True
+        if sys.platform == 'darwin':
+            mac_paths = [
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                os.path.expanduser(
+                    "~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+                ),
+                "/Applications/Chromium.app/Contents/MacOS/Chromium",
+                os.path.expanduser(
+                    "~/Applications/Chromium.app/Contents/MacOS/Chromium"
+                ),
+                "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+                os.path.expanduser(
+                    "~/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
+                ),
+            ]
+            for path in mac_paths:
+                if os.path.exists(path):
+                    return path
 
-        # Проверяем через команду where (Windows)
-        try:
-            result = subprocess.run(['where', 'chrome'],
-                                  capture_output=True,
-                                  text=True,
-                                  timeout=5)
-            if result.returncode == 0 and result.stdout.strip():
-                return True
-        except:
-            pass
+        # Типичные имена в PATH (macOS / Linux / Windows с установленным браузером в PATH)
+        for cmd in (
+            "google-chrome",
+            "google-chrome-stable",
+            "chromium",
+            "chromium-browser",
+            "chrome",
+            "brave-browser",
+            "brave",
+            "msedge",
+        ):
+            try:
+                cmd_path = shutil.which(cmd)
+                if cmd_path:
+                    return cmd_path
+            except OSError:
+                pass
 
-        return False
+        return None
 
     def init_driver(self):
         """Инициализация браузера Chrome"""
         try:
             print("Инициализация браузера Chrome...")
 
-            # Проверяем наличие Chrome
-            if not self.check_chrome_installed():
+            # Проверяем наличие совместимого Chromium-браузера
+            browser_binary = self.get_chrome_binary_path()
+            if not browser_binary:
                 raise Exception(
-                    "Google Chrome не найден!\n"
-                    "Пожалуйста, установите Google Chrome с официального сайта:\n"
-                    "https://www.google.com/chrome/"
+                    "Не найден совместимый Chromium-браузер (Chrome/Chromium/Brave)!\n"
+                    "Установите Google Chrome или Chromium/Brave и повторите запуск.\n"
+                    "Google Chrome: https://www.google.com/chrome/"
                 )
+            chrome_options.binary_location = browser_binary
+            print(f"Использую браузер: {browser_binary}")
 
             chrome_options = Options()
             chrome_options.add_argument("--disable-blink-features=AutomationControlled")
@@ -152,6 +196,24 @@ class PinterestParser:
                 if not os.path.exists(driver_path):
                     raise FileNotFoundError(f"ChromeDriver не найден по пути: {driver_path}")
 
+                # webdriver-manager на macOS/Linux иногда указывает на неисполняемый файл в каталоге
+                if os.name != "nt":
+                    if not (
+                        os.path.isfile(driver_path)
+                        and os.access(driver_path, os.X_OK)
+                    ):
+                        driver_dir = os.path.dirname(driver_path)
+                        for fn in sorted(os.listdir(driver_dir)):
+                            fp = os.path.join(driver_dir, fn)
+                            if (
+                                fn == "chromedriver"
+                                and os.path.isfile(fp)
+                                and os.access(fp, os.X_OK)
+                            ):
+                                driver_path = fp
+                                print(f"Использую исполняемый chromedriver: {driver_path}")
+                                break
+
                 # Проверяем, что это исполняемый файл (для Windows это .exe)
                 if os.name == 'nt' and not driver_path.endswith('.exe'):
                     # Ищем .exe файл в той же директории
@@ -173,8 +235,11 @@ class PinterestParser:
                     # Пробуем без указания пути (Selenium найдет сам)
                     self.driver = webdriver.Chrome(options=chrome_options)
                 except Exception as e2:
-                    # Последняя попытка - ищем chromedriver.exe в текущей директории
-                    local_driver = os.path.join(os.getcwd(), 'chromedriver.exe')
+                    # Последняя попытка — локальный chromedriver в текущей директории
+                    local_name = (
+                        "chromedriver.exe" if os.name == "nt" else "chromedriver"
+                    )
+                    local_driver = os.path.join(os.getcwd(), local_name)
                     if os.path.exists(local_driver):
                         try:
                             service = Service(local_driver)
