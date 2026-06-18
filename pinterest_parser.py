@@ -10,7 +10,9 @@ import requests
 import subprocess
 import shutil
 import hashlib
+from pathlib import Path
 from urllib.parse import urlparse, parse_qs, unquote
+from dotenv import load_dotenv
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -21,6 +23,9 @@ from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
+
+# Загружаем переменные из .env в корне проекта
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 
 class PinterestParser:
@@ -38,7 +43,194 @@ class PinterestParser:
         self.image_quality = "full"  # Качество изображений: full, medium, small
         self.max_workers = 5  # Количество потоков для параллельного скачивания
         self.session = None  # Переиспользуемая сессия requests
+        self._logged_in = False
         self.setup_download_folder()
+
+    @staticmethod
+    def get_credentials():
+        """Возвращает (email, password) из переменных окружения или (None, None)."""
+        email = (
+            os.getenv("PINTEREST_EMAIL")
+            or os.getenv("PINTEREST_LOGIN")
+            or ""
+        ).strip()
+        password = (os.getenv("PINTEREST_PASSWORD") or "").strip()
+        if email and password:
+            return email, password
+        return None, None
+
+    def _find_login_field(self, selectors):
+        """Ищет первое доступное поле ввода по списку CSS-селекторов."""
+        for selector in selectors:
+            try:
+                elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                for element in elements:
+                    if element.is_displayed() and element.is_enabled():
+                        return element
+            except Exception:
+                continue
+        return None
+
+    def _is_login_form_visible(self):
+        """Проверяет, видна ли форма входа (страница или модальное окно)."""
+        if not self.driver:
+            return False
+
+        email_selectors = [
+            "input#email",
+            "input[name='id']",
+            "input[autocomplete='email']",
+            "input[type='email']",
+        ]
+        password_selectors = [
+            "input#password",
+            "input[name='password']",
+            "input[autocomplete='current-password']",
+            "input[type='password']",
+        ]
+
+        email_field = self._find_login_field(email_selectors)
+        password_field = self._find_login_field(password_selectors)
+        return email_field is not None and password_field is not None
+
+    def _submit_login_form(self, email, password):
+        """Заполняет и отправляет форму входа на текущей странице."""
+        email_selectors = [
+            "input#email",
+            "input[name='id']",
+            "input[autocomplete='email']",
+            "input[type='email']",
+        ]
+        password_selectors = [
+            "input#password",
+            "input[name='password']",
+            "input[autocomplete='current-password']",
+            "input[type='password']",
+        ]
+        submit_selectors = [
+            "button[type='submit']",
+            "button[data-test-id='registerFormSubmitButton']",
+            "div[data-test-id='login-button'] button",
+        ]
+
+        email_field = self._find_login_field(email_selectors)
+        password_field = self._find_login_field(password_selectors)
+        if not email_field or not password_field:
+            return False
+
+        email_field.clear()
+        email_field.send_keys(email)
+        time.sleep(0.3)
+        password_field.clear()
+        password_field.send_keys(password)
+        time.sleep(0.3)
+
+        submit_button = self._find_login_field(submit_selectors)
+        if submit_button:
+            submit_button.click()
+        else:
+            password_field.submit()
+
+        return True
+
+    def login_to_pinterest(self):
+        """
+        Выполняет вход в Pinterest с учётными данными из .env.
+
+        Returns:
+            True если вход выполнен или уже был выполнен, False при ошибке
+        """
+        if self._logged_in:
+            return True
+
+        email, password = self.get_credentials()
+        if not email or not password:
+            print(
+                "Учётные данные не заданы. Создайте файл .env "
+                "(см. .env.example) с PINTEREST_EMAIL и PINTEREST_PASSWORD"
+            )
+            return False
+
+        if not self.driver:
+            return False
+
+        try:
+            print("Выполняю вход в Pinterest...")
+            self.driver.get("https://www.pinterest.com/login/")
+            time.sleep(2)
+
+            if not self._submit_login_form(email, password):
+                print("Не удалось найти форму входа на странице логина")
+                return False
+
+            # Ждём исчезновения формы входа или появления признаков авторизации
+            for _ in range(20):
+                time.sleep(1)
+                if not self._is_login_form_visible():
+                    self._logged_in = True
+                    print("✓ Вход в Pinterest выполнен")
+                    self.init_session()
+                    return True
+
+            print(
+                "Не удалось подтвердить вход. Возможны капча или двухфакторная "
+                "аутентификация — войдите вручную в открытом браузере"
+            )
+            return False
+        except Exception as e:
+            print(f"Ошибка при входе в Pinterest: {e}")
+            return False
+
+    def handle_login_modal(self):
+        """
+        Закрывает модальное окно входа, если оно появилось на странице.
+
+        Returns:
+            True если модальное окно обработано или отсутствует
+        """
+        if self._logged_in or not self.driver:
+            return True
+
+        email, password = self.get_credentials()
+        if not email or not password:
+            return False
+
+        if not self._is_login_form_visible():
+            return True
+
+        try:
+            print("Обнаружено окно входа, выполняю авторизацию...")
+            if not self._submit_login_form(email, password):
+                return False
+
+            for _ in range(15):
+                time.sleep(1)
+                if not self._is_login_form_visible():
+                    self._logged_in = True
+                    print("✓ Авторизация через модальное окно выполнена")
+                    self.init_session()
+                    return True
+
+            print("Модальное окно входа всё ещё открыто")
+            return False
+        except Exception as e:
+            print(f"Ошибка при авторизации через модальное окно: {e}")
+            return False
+
+    def ensure_authenticated(self):
+        """Выполняет вход, если в .env заданы учётные данные."""
+        email, password = self.get_credentials()
+        if not email or not password:
+            return False
+        return self.login_to_pinterest()
+
+    def open_page(self, url, wait_seconds=5):
+        """Открывает страницу Pinterest с обработкой окна входа."""
+        print(f"Открываю страницу: {url}")
+        self.driver.get(url)
+        time.sleep(2)
+        self.handle_login_modal()
+        time.sleep(max(0, wait_seconds - 2))
 
     def setup_download_folder(self):
         """Создает папку для скачивания, если её нет"""
@@ -168,10 +360,9 @@ class PinterestParser:
                     "Установите Google Chrome или Chromium/Brave и повторите запуск.\n"
                     "Google Chrome: https://www.google.com/chrome/"
                 )
+            chrome_options = Options()
             chrome_options.binary_location = browser_binary
             print(f"Использую браузер: {browser_binary}")
-
-            chrome_options = Options()
             chrome_options.add_argument("--disable-blink-features=AutomationControlled")
             chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
             chrome_options.add_experimental_option('useAutomationExtension', False)
@@ -270,6 +461,7 @@ class PinterestParser:
 
             self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             print("✓ Браузер успешно инициализирован")
+            self.ensure_authenticated()
 
         except Exception as e:
             print(f"\n✗ Ошибка инициализации браузера: {e}")
@@ -1529,15 +1721,11 @@ class PinterestParser:
             print(f"\nКритическая ошибка: {e}")
             return
 
-        print(f"Открываю страницу: {url}")
         try:
-            self.driver.get(url)
+            self.open_page(url)
         except Exception as e:
             print(f"Ошибка при открытии страницы: {e}")
             return
-
-        # Ждем загрузки страницы
-        time.sleep(5)
 
         # Прокручиваем страницу для загрузки изображений
         # Если указано ограничение, прокручиваем только до нужного количества

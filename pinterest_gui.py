@@ -2099,8 +2099,7 @@ class PinterestDownloaderGUI:
 
             # Открытие страницы (браузер уже открыт если переиспользуем)
             self.safe_update_ui(lambda: self.progress_var.set("Открытие страницы...") or 0)
-            parser.driver.get(expanded_url)
-            time.sleep(5)
+            parser.open_page(expanded_url)
 
             # Получаем название доски из страницы если еще не получили
             if not board_name and self.auto_subfolder.get():

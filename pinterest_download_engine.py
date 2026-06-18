@@ -676,8 +676,7 @@ class PinterestDownloadEngine:
 
             self._progress_status("Открытие страницы...")
             assert parser.driver
-            parser.driver.get(expanded_url)
-            time.sleep(5)
+            parser.open_page(expanded_url)
 
             if not board_name and self.s.auto_subfolder:
                 try:
