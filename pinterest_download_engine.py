@@ -47,6 +47,27 @@ class DownloadSettings:
     timing_stats_file: str = "timing_stats.json"
 
 
+def find_upscale_binary() -> Optional[Path]:
+    """Путь к realesrgan-ncnn-vulkan в upscale/ или None."""
+    base_dir = Path(__file__).resolve().parent
+    tools_dir = base_dir / "upscale" / "tools"
+    names = (
+        ["realesrgan-ncnn-vulkan.exe"]
+        if sys.platform == "win32"
+        else ["realesrgan-ncnn-vulkan", "realesrgan-ncnn-vulkan.exe"]
+    )
+    for name in names:
+        for cand in (tools_dir / name, base_dir / "upscale" / name, base_dir / name):
+            if cand.exists():
+                return cand
+    if tools_dir.exists():
+        for name in names:
+            found = next((p for p in tools_dir.rglob(name) if p.is_file()), None)
+            if found:
+                return found
+    return None
+
+
 class DownloadControl:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -91,6 +112,9 @@ class PinterestDownloadEngine:
         upscale_timer: Callable[[str], None],
         notify: Callable[[str, str], None],
         urls_discovered: Optional[Callable[[List[str]], None]] = None,
+        stats_changed: Optional[Callable[[Dict[str, int]], None]] = None,
+        job_started: Optional[Callable[[int], None]] = None,
+        job_finished: Optional[Callable[[int, bool], None]] = None,
     ) -> None:
         self.s = settings
         self.ctrl = control
@@ -103,6 +127,9 @@ class PinterestDownloadEngine:
         self._upscale_timer = upscale_timer
         self._notify = notify
         self._urls_discovered = urls_discovered
+        self._stats_changed = stats_changed
+        self._job_started = job_started
+        self._job_finished = job_finished
 
         self._parser: Optional[PinterestParser] = None
         self.stats = {"found": 0, "downloaded": 0, "failed": 0, "skipped": 0}
@@ -228,25 +255,12 @@ class PinterestDownloadEngine:
             f"Найдено: {s['found']} | Скачано: {s['downloaded']} | "
             f"Ошибок: {s['failed']} | Пропущено: {s['skipped']}"
         )
+        if self._stats_changed:
+            self._stats_changed(dict(s))
 
     # --- upscale helpers (как в pinterest_gui.py) ---
     def _find_upscale_exe(self) -> Optional[Path]:
-        base_dir = Path(__file__).resolve().parent
-        tools_dir = base_dir / "upscale" / "tools"
-        names = (
-            ["realesrgan-ncnn-vulkan.exe"]
-            if sys.platform == "win32"
-            else ["realesrgan-ncnn-vulkan", "realesrgan-ncnn-vulkan.exe"]
-        )
-        for name in names:
-            for cand in (tools_dir / name, base_dir / "upscale" / name, base_dir / name):
-                if cand.exists():
-                    return cand
-        for name in names:
-            found = next((p for p in tools_dir.rglob(name) if p.is_file()), None)
-            if found:
-                return found
-        return None
+        return find_upscale_binary()
 
     def _find_models_dir(self, exe_path: Optional[Path]) -> Optional[Path]:
         if exe_path:
@@ -741,6 +755,8 @@ class PinterestDownloadEngine:
             last_timer_emit = 0.0
 
             downloaded = failed = skipped = 0
+            # Счётчики в self.stats — общие для всех досок запуска
+            base = dict(self.stats)
             for index, img_url in enumerate(image_urls):
                 if self.ctrl.should_stop():
                     break
@@ -775,7 +791,7 @@ class PinterestDownloadEngine:
                         f"Скачивание: {index+1}/{len(image_urls)} "
                         f"(всего: {self.current_downloaded_count}/{self.total_images_to_download})"
                     )
-                    self.stats["failed"] = failed
+                    self.stats["failed"] = base["failed"] + failed
                     self._emit_stats()
                     continue
 
@@ -786,7 +802,7 @@ class PinterestDownloadEngine:
                         self.current_downloaded_count,
                         max(1, self.total_images_to_download),
                     )
-                    self.stats["failed"] = failed
+                    self.stats["failed"] = base["failed"] + failed
                     self._emit_stats()
                     continue
 
@@ -809,7 +825,7 @@ class PinterestDownloadEngine:
                         max(1, self.total_images_to_download),
                     )
                     self._log(f"⏭ Пропущено (уже есть): {filename}")
-                    self.stats["skipped"] = skipped
+                    self.stats["skipped"] = base["skipped"] + skipped
                     self._emit_stats()
                     continue
                 if os.path.exists(filepath) and not self.s.resume_download:
@@ -863,9 +879,9 @@ class PinterestDownloadEngine:
                     f"Скачивание: {index+1}/{len(image_urls)} "
                     f"(всего: {self.current_downloaded_count}/{self.total_images_to_download})"
                 )
-                self.stats["downloaded"] = downloaded
-                self.stats["skipped"] = skipped
-                self.stats["failed"] = failed
+                self.stats["downloaded"] = base["downloaded"] + downloaded
+                self.stats["skipped"] = base["skipped"] + skipped
+                self.stats["failed"] = base["failed"] + failed
                 self._emit_stats()
                 time.sleep(self.s.download_delay)
 
@@ -958,6 +974,9 @@ class PinterestDownloadEngine:
                 disp = f"{board} - {url}" if board else url
                 md = f" (макс. {mi})" if mi > 0 else " (все изображения)"
                 self._log(f"\n=== URL {idx+1}/{len(url_jobs)}: {disp}{md} ===")
+                if self._job_started:
+                    self._job_started(idx)
+                folder = None
                 try:
                     folder = self.download_worker(
                         url, board, reuse_parser=reuse, max_images=mi
@@ -966,6 +985,8 @@ class PinterestDownloadEngine:
                         all_folders.append(folder)
                 except Exception as e:
                     self._log(f"❌ Ошибка URL: {e}\n{traceback.format_exc()}")
+                if self._job_finished:
+                    self._job_finished(idx, bool(folder))
                 if idx < len(url_jobs) - 1 and not self.ctrl.should_stop():
                     time.sleep(2)
         finally:

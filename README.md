@@ -32,7 +32,7 @@ pip install -r requirements.txt
 - `requests` - для скачивания изображений
 - `Pillow` - для работы с изображениями
 - `tkinter` - GUI (обычно входит в Python)
-- `PySide6` - нативный GUI для macOS (fallback, если Tk недоступен)
+- `PySide6` - нативный интерфейс для macOS (на Mac используется всегда)
 - `win10toast` - уведомления Windows (опционально)
 
 ## Установка
@@ -41,7 +41,8 @@ pip install -r requirements.txt
 2. Установите зависимости: `pip install -r requirements.txt`
 3. Запустите программу:
    - универсально: `python pinterest_gui.py`
-   - macOS (Qt-версия): `python pinterest_gui_mac.py`
+   - macOS: `python pinterest_gui.py` или `python pinterest_gui_mac.py` — оба открывают нативный интерфейс
+     в стиле macOS (боковая панель, светлая/тёмная тема, миниатюры досок, перетаскивание ссылок в окно)
 
 ## Использование
 

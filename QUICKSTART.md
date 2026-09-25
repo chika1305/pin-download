@@ -4,23 +4,17 @@
 
 ### macOS
 
-Не используйте для GUI только Python из **Xcode Command Line Tools**: с ним идёт старый **Tk 8.5**, на новых версиях macOS окно падает при старте (в логе бывает «macOS 26 required, have 16»). Нужен Python с [python.org](https://www.python.org/downloads/) или из Homebrew (`brew install python@3.12`), затем venv именно от него:
+На Mac используется нативный интерфейс на Qt (PySide6) — подходит любой Python 3.9+, включая встроенный:
 
 ```bash
-rm -rf .venv
-/Library/Frameworks/Python.framework/Versions/3.12/bin/python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python pinterest_gui.py
+python pinterest_gui.py        # или python pinterest_gui_mac.py — это одно и то же окно
 ```
 
-**Вариант без Tk (рекомендуется на новых macOS):** после `pip install -r requirements.txt` ставится **PySide6**. Запуск нативного Qt-интерфейса с той же логикой скачивания:
+Почему не Tk: Python из **Xcode Command Line Tools** идёт со старым **Tk 8.5**, который на новых macOS либо падает при старте, либо показывает пустое белое окно. Поэтому `pinterest_gui.py` на Mac сразу открывает Qt-интерфейс. Старый Tk-интерфейс можно включить вручную (`PIN_DOWNLOADER_TK=1`), но только с Tk 8.6+ (Python с python.org или Homebrew).
 
-```bash
-python pinterest_gui_mac.py
-```
-
-(Путь к `python3` подставьте свой — `which python3` после установки.)
+Полезные сочетания клавиш: ⌘L — поле ссылки, ⌘⇧V — добавить ссылки из буфера, ⌘↩ — скачать, ⌘. — остановить, ⌘1…⌘5 — разделы, ⌘, — настройки. Ссылку можно просто перетащить из браузера в окно.
 
 ### Все платформы
 

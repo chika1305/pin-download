@@ -9,15 +9,20 @@ import sys
 
 def _ensure_tkinter_usable():
     """
-    На macOS Python из Xcode Command Line Tools тянет системный Tk 8.5, который на новых
-    версиях ОС падает при init (сообщение вида «macOS 26 required, have 16»). Проверяем
-    в дочернем процессе, чтобы не убивать основной интерпретатор SIGABRT.
+    На macOS основной интерфейс — нативный Qt (pinterest_gui_mac.py). Python из Xcode
+    Command Line Tools тянет системный Tk 8.5: на новых версиях ОС он либо падает при init
+    («macOS 26 required, have 16»), либо запускается, но рисует пустое белое окно.
+    Tk-версию можно включить принудительно: PIN_DOWNLOADER_TK=1 (нужен Tk 8.6+).
+    Проверяем Tk в дочернем процессе, чтобы не убивать основной интерпретатор SIGABRT.
     """
     if sys.platform != "darwin":
         return
-    # Достаточно import — на части систем падает только при создании корневого окна (TkpInit).
+    if os.environ.get("PIN_DOWNLOADER_TK") != "1":
+        _run_qt_fallback_or_exit(None, quiet=True)
+    # Tk 8.5 создаёт окно без ошибок, но ничего в нём не рисует — отсекаем по версии.
     _probe = (
         "import tkinter as tk; "
+        "assert tk.TkVersion >= 8.6, 'Tk %s устарел, нужен 8.6+' % tk.TkVersion; "
         "r = tk.Tk(); r.withdraw(); r.destroy()"
     )
     try:
@@ -61,14 +66,15 @@ def _ensure_tkinter_usable():
     _run_qt_fallback_or_exit(None)
 
 
-def _run_qt_fallback_or_exit(cause):
-    """Запускает Qt GUI на macOS, если Tk недоступен."""
+def _run_qt_fallback_or_exit(cause, quiet=False):
+    """Запускает Qt GUI на macOS (основной интерфейс или замена неработающему Tk)."""
     try:
         from pinterest_gui_mac import main as qt_main
-        print(
-            "Tkinter недоступен. Запускаю Qt-интерфейс: pinterest_gui_mac.py",
-            file=sys.stderr,
-        )
+        if not quiet:
+            print(
+                "Tkinter недоступен. Запускаю Qt-интерфейс: pinterest_gui_mac.py",
+                file=sys.stderr,
+            )
         qt_main()
         raise SystemExit(0)
     except Exception as qt_error:
