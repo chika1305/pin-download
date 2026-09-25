@@ -15,7 +15,7 @@ import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Union
 from urllib.parse import unquote
 
 from PIL import Image
@@ -47,25 +47,72 @@ class DownloadSettings:
     timing_stats_file: str = "timing_stats.json"
 
 
+def _resource_dirs() -> List[Path]:
+    """Папка с кодом, а в собранном .app — ещё и ресурсы PyInstaller."""
+    dirs = [Path(__file__).resolve().parent]
+    bundled = getattr(sys, "_MEIPASS", None)
+    if bundled and Path(bundled) not in dirs:
+        dirs.append(Path(bundled))
+    return dirs
+
+
 def find_upscale_binary() -> Optional[Path]:
     """Путь к realesrgan-ncnn-vulkan в upscale/ или None."""
-    base_dir = Path(__file__).resolve().parent
-    tools_dir = base_dir / "upscale" / "tools"
     names = (
         ["realesrgan-ncnn-vulkan.exe"]
         if sys.platform == "win32"
         else ["realesrgan-ncnn-vulkan", "realesrgan-ncnn-vulkan.exe"]
     )
-    for name in names:
-        for cand in (tools_dir / name, base_dir / "upscale" / name, base_dir / name):
-            if cand.exists():
-                return cand
-    if tools_dir.exists():
+    for base_dir in _resource_dirs():
+        tools_dir = base_dir / "upscale" / "tools"
         for name in names:
-            found = next((p for p in tools_dir.rglob(name) if p.is_file()), None)
-            if found:
-                return found
+            for cand in (tools_dir / name, base_dir / "upscale" / name, base_dir / name):
+                if cand.exists():
+                    return cand
+        if tools_dir.exists():
+            for name in names:
+                found = next((p for p in tools_dir.rglob(name) if p.is_file()), None)
+                if found:
+                    return found
     return None
+
+
+class JobQueue:
+    """
+    Очередь досок для run_multi. Интерфейс может добавлять, убирать и переставлять
+    ещё не начатые доски прямо во время скачивания.
+    """
+
+    def __init__(self, jobs: Optional[List[Dict]] = None) -> None:
+        self._lock = threading.Lock()
+        self._pending: List[Dict] = list(jobs or [])
+        self._taken: set = set()
+
+    @staticmethod
+    def key(job: Dict) -> str:
+        return str(job.get("key") or job["url"])
+
+    def pop_next(self) -> Optional[Dict]:
+        with self._lock:
+            if not self._pending:
+                return None
+            job = self._pending.pop(0)
+            self._taken.add(self.key(job))
+            return job
+
+    def set_pending(self, jobs: List[Dict]) -> None:
+        """Заменяет список ожидающих досок; уже взятые в работу не добавляются повторно."""
+        with self._lock:
+            self._pending = [j for j in jobs if self.key(j) not in self._taken]
+
+    def release(self, key: str) -> None:
+        """Разрешает взять доску ещё раз (повтор после ошибки)."""
+        with self._lock:
+            self._taken.discard(key)
+
+    def has_pending(self) -> bool:
+        with self._lock:
+            return bool(self._pending)
 
 
 class DownloadControl:
@@ -113,8 +160,9 @@ class PinterestDownloadEngine:
         notify: Callable[[str, str], None],
         urls_discovered: Optional[Callable[[List[str]], None]] = None,
         stats_changed: Optional[Callable[[Dict[str, int]], None]] = None,
-        job_started: Optional[Callable[[int], None]] = None,
-        job_finished: Optional[Callable[[int, bool], None]] = None,
+        job_started: Optional[Callable[[str], None]] = None,
+        job_finished: Optional[Callable[[str, bool], None]] = None,
+        job_progress: Optional[Callable[[str, int, int, float], None]] = None,
     ) -> None:
         self.s = settings
         self.ctrl = control
@@ -130,6 +178,8 @@ class PinterestDownloadEngine:
         self._stats_changed = stats_changed
         self._job_started = job_started
         self._job_finished = job_finished
+        self._job_progress = job_progress
+        self._current_job: Optional[str] = None
 
         self._parser: Optional[PinterestParser] = None
         self.stats = {"found": 0, "downloaded": 0, "failed": 0, "skipped": 0}
@@ -267,10 +317,10 @@ class PinterestDownloadEngine:
             near = exe_path.parent / "models"
             if near.exists() and any(near.glob("*.param")) and any(near.glob("*.bin")):
                 return near
-        tools_dir = Path(__file__).resolve().parent / "upscale" / "tools"
-        models = tools_dir / "models"
-        if models.exists() and any(models.glob("*.param")) and any(models.glob("*.bin")):
-            return models
+        for base_dir in _resource_dirs():
+            models = base_dir / "upscale" / "tools" / "models"
+            if models.exists() and any(models.glob("*.param")) and any(models.glob("*.bin")):
+                return models
         return None
 
     def _list_model_names(self, models_dir: Path) -> List[str]:
@@ -754,6 +804,18 @@ class PinterestDownloadEngine:
             self._download_timer("Прошло: 0 сек")
             last_timer_emit = 0.0
 
+            job_key = self._current_job
+            job_bytes = 0
+            job_t0 = time.time()
+
+            def job_tick(done: int) -> None:
+                # done/total по текущей доске и средняя скорость в байтах/с
+                if self._job_progress and job_key is not None:
+                    elapsed = max(0.001, time.time() - job_t0)
+                    self._job_progress(job_key, done, len(image_urls), job_bytes / elapsed)
+
+            job_tick(0)
+
             downloaded = failed = skipped = 0
             # Счётчики в self.stats — общие для всех досок запуска
             base = dict(self.stats)
@@ -793,6 +855,7 @@ class PinterestDownloadEngine:
                     )
                     self.stats["failed"] = base["failed"] + failed
                     self._emit_stats()
+                    job_tick(index + 1)
                     continue
 
                 if not full_url:
@@ -804,6 +867,7 @@ class PinterestDownloadEngine:
                     )
                     self.stats["failed"] = base["failed"] + failed
                     self._emit_stats()
+                    job_tick(index + 1)
                     continue
 
                 if self.s.auto_rename and self.s.filename_template:
@@ -827,6 +891,7 @@ class PinterestDownloadEngine:
                     self._log(f"⏭ Пропущено (уже есть): {filename}")
                     self.stats["skipped"] = base["skipped"] + skipped
                     self._emit_stats()
+                    job_tick(index + 1)
                     continue
                 if os.path.exists(filepath) and not self.s.resume_download:
                     try:
@@ -844,6 +909,7 @@ class PinterestDownloadEngine:
                 if ok:
                     try:
                         if os.path.exists(filepath):
+                            job_bytes += os.path.getsize(filepath)
                             sz_mb = os.path.getsize(filepath) / (1024 * 1024)
                             if sz_mb < self.s.min_size_mb or sz_mb > self.s.max_size_mb:
                                 try:
@@ -883,6 +949,7 @@ class PinterestDownloadEngine:
                 self.stats["skipped"] = base["skipped"] + skipped
                 self.stats["failed"] = base["failed"] + failed
                 self._emit_stats()
+                job_tick(index + 1)
                 time.sleep(self.s.download_delay)
 
             if self.download_start_time:
@@ -943,51 +1010,61 @@ class PinterestDownloadEngine:
                 self._parser = None
             return None
 
-    def run_multi(self, url_jobs: List[Dict]) -> None:
+    def run_multi(self, url_jobs: Union[List[Dict], JobQueue]) -> None:
         """
         url_jobs: [{"url": str, "board_name": str|None, "max_images": int}, ...]
+        или JobQueue, которую интерфейс может менять во время работы.
         """
+        queue = url_jobs if isinstance(url_jobs, JobQueue) else JobQueue(url_jobs)
         all_folders: List[str] = []
-        if not url_jobs:
+        if not queue.has_pending():
             self._log("\n=== Все задачи завершены ===")
             return
 
-        # Несколько досок — один браузер на все URL (как в pinterest_gui.py)
-        if len(url_jobs) > 1:
-            base = PinterestParser(download_folder=self.s.download_folder)
-            base.scroll_delay = self.s.scroll_delay
-            base.download_delay = self.s.download_delay
-            base.image_quality = self.s.image_quality
-            base.max_workers = 5
-            self._progress_status("Инициализация браузера...")
+        # Один браузер на все доски (как в pinterest_gui.py)
+        base = PinterestParser(download_folder=self.s.download_folder)
+        base.scroll_delay = self.s.scroll_delay
+        base.download_delay = self.s.download_delay
+        base.image_quality = self.s.image_quality
+        base.max_workers = 5
+        self._progress_status("Инициализация браузера...")
+        try:
             base.init_driver()
-            self._parser = base
+        except Exception as e:
+            self._log(f"❌ Не удалось запустить браузер: {e}\n{traceback.format_exc()}")
+            return
+        self._parser = base
 
         try:
-            for idx, job in enumerate(url_jobs):
-                if self.ctrl.should_stop():
+            idx = 0
+            while not self.ctrl.should_stop():
+                job = queue.pop_next()
+                if job is None:
                     break
+                key = JobQueue.key(job)
                 url = job["url"]
                 board = job.get("board_name")
                 mi = int(job.get("max_images") or 0)
-                reuse = len(url_jobs) > 1
                 disp = f"{board} - {url}" if board else url
                 md = f" (макс. {mi})" if mi > 0 else " (все изображения)"
-                self._log(f"\n=== URL {idx+1}/{len(url_jobs)}: {disp}{md} ===")
+                self._log(f"\n=== Доска {idx+1}: {disp}{md} ===")
+                self._current_job = key
                 if self._job_started:
-                    self._job_started(idx)
+                    self._job_started(key)
                 folder = None
                 try:
                     folder = self.download_worker(
-                        url, board, reuse_parser=reuse, max_images=mi
+                        url, board, reuse_parser=True, max_images=mi
                     )
                     if folder:
                         all_folders.append(folder)
                 except Exception as e:
                     self._log(f"❌ Ошибка URL: {e}\n{traceback.format_exc()}")
+                self._current_job = None
                 if self._job_finished:
-                    self._job_finished(idx, bool(folder))
-                if idx < len(url_jobs) - 1 and not self.ctrl.should_stop():
+                    self._job_finished(key, bool(folder))
+                idx += 1
+                if queue.has_pending() and not self.ctrl.should_stop():
                     time.sleep(2)
         finally:
             if self._parser:

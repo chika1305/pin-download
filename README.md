@@ -44,6 +44,21 @@ pip install -r requirements.txt
    - macOS: `python pinterest_gui.py` или `python pinterest_gui_mac.py` — оба открывают нативный интерфейс
      в стиле macOS (боковая панель, светлая/тёмная тема, миниатюры досок, перетаскивание ссылок в окно)
 
+### macOS: приложение «Pinterest Downloader»
+
+Проект собирается в обычную программу для Mac — `Pinterest Downloader.app` со своей иконкой,
+Python и всеми зависимостями внутри (Real-ESRGAN с моделями тоже вложен):
+
+```bash
+./packaging/build_macos.sh --install   # собрать и установить в /Applications
+./packaging/build_macos.sh --dmg       # собрать образ dist/Pinterest Downloader.dmg
+```
+
+После этого программа запускается из Launchpad, Spotlight или папки «Программы».
+Очередь, история и настройки хранятся в `~/Library/Application Support/Pinterest Downloader`
+(при первом запуске переносятся из папки проекта), пароль Pinterest — в Связке ключей
+(Настройки → «Аккаунт Pinterest»; логин из `.env` переносится туда автоматически).
+
 ## Использование
 
 ### Базовое использование
